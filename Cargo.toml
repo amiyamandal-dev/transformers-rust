@@ -8,3 +8,7 @@ edition = "2018"
 
 [dependencies]
 tch = "0.3.1"
+
+[[bin]]
+name = "start"
+path = "src/main.rs"
