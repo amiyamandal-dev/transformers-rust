@@ -3,7 +3,6 @@ extern crate tch;
 use tch::{Device, Kind, nn, Tensor};
 use tch::nn::{Init, Module, ModuleT};
 
-
 #[derive(Debug)]
 pub struct SelfAttention {
     device: Device,
@@ -17,7 +16,7 @@ pub struct SelfAttention {
 }
 
 impl SelfAttention {
-    pub fn new(vs: nn::Path, embed_size: i64, heads: i64) -> Self {
+    pub fn new(vs: nn::Path, embed_size: i64, heads: i64) -> (Self, nn::Path) {
         let head_dim = embed_size / heads;
         assert_eq!(head_dim * heads, embed_size);
         let config = nn::LinearConfig {
@@ -25,7 +24,7 @@ impl SelfAttention {
             bs_init: None,
             bias: false,
         };
-        SelfAttention {
+        (SelfAttention {
             device: vs.device(),
             embed_size: embed_size,
             heads: heads,
@@ -34,7 +33,7 @@ impl SelfAttention {
             keys: nn::linear(&vs, head_dim, head_dim, config),
             queries: nn::linear(&vs, head_dim, head_dim, config),
             fc_out: nn::linear(&vs, head_dim * heads, embed_size, Default::default()),
-        }
+        }, vs)
     }
 
     pub fn forward(&mut self, values: &Tensor, keys: &Tensor, query: &Tensor, mask: &Tensor) -> Tensor {
@@ -55,7 +54,7 @@ impl SelfAttention {
         let query_new = self.queries.forward_t(&query_new_shape, true);
 
 
-        let energy = Tensor::einsum("nqhd,nkhd->nhqk", &[query_new, keys_new]);
+        let mut energy: Tensor = Tensor::einsum("nqhd,nkhd->nhqk", &[query_new, keys_new]);
         /*
         query_new_shape :(N, query_len, self.heads, self.head_dim)
         keys_new_shape :(N, key_len, self.heads, self.head_dim)
@@ -68,6 +67,11 @@ impl SelfAttention {
         if mask is not None:
             energy = energy.masked_fill(mask==0, float("-1e20"))
         */
+        // let mask_size = mask.size();
+        // if !mask_size.is_empty() {
+        //     let k = mask.w
+        //     energy = energy.masked_fill(&, (-1e20));
+        // }
 
         let mut attention = energy / self.embed_size.pow(1 / 2);
         attention = attention.softmax(3, Kind::Float);
@@ -102,22 +106,22 @@ pub struct TransformerBlock {
 
 
 impl TransformerBlock {
-    pub fn new(vs: nn::Path, embed_size: i64, heads: i64, dropout: f64, forward_expansion: i64) -> Self {
+    pub fn new(vs: nn::Path, embed_size: i64, heads: i64, dropout: f64, forward_expansion: i64) -> (Self, nn::Path) {
         let norm1 = nn::layer_norm(&vs, vec![embed_size], Default::default());
         let norm2 = nn::layer_norm(&vs, vec![embed_size], Default::default());
         let liner1 = nn::linear(&vs, embed_size, forward_expansion * embed_size, Default::default());
         let liner2 = nn::linear(&vs, forward_expansion * embed_size, embed_size, Default::default());
-        let attention = SelfAttention::new(vs, embed_size.clone(), heads.clone());
+        let (attention, vs) = SelfAttention::new(vs, embed_size.clone(), heads.clone());
 
 
-        TransformerBlock {
+        (TransformerBlock {
             attention,
             norm1,
             norm2,
             liner1,
             liner2,
             dropout,
-        }
+        }, vs)
     }
 
 
@@ -150,15 +154,24 @@ impl Encoder {
                forward_expansion: i64,
                dropout: f64,
                max_length: i64) {
+        let mut vs_n: nn::Path;
         let word_embedding = nn::embedding(&vs, src_vocab_size, embed_size, Default::default());
-        let position_embedding = nn::embedding(&vs, max_length, embed_size,Default::default());
-        let mut temp_vec :Vec<TransformerBlock> = vec![];
-        for i in 0..num_layers{
-
-            let t = TransformerBlock::new(vs, embed_size,heads, dropout, forward_expansion);
+        let position_embedding = nn::embedding(&vs, max_length, embed_size, Default::default());
+        let mut temp_vec: Vec<TransformerBlock> = vec![];
+        // transformer block
+        vs_n = vs;
+        for _ in 0..num_layers {
+            let (t, vs_t) = TransformerBlock::new(vs_n, embed_size, heads, dropout, forward_expansion);
+            vs_n = vs_t;
             temp_vec.push(t);
-
         }
+    }
+
+    pub fn forward(&mut self, x: &Tensor, mask: &Tensor) {
+        let size = x.size();
+        let (N, seq_length) = (size[0], size[1]);
+        // change when gpu
+        let position = Tensor::arange1(0, seq_length, (Kind::Float, Device::Cpu)).expand(&[N, seq_length], true);
     }
 }
 
